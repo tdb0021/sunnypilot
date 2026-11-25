@@ -162,8 +162,9 @@ class TestChryslerRamHDAltButtonSafety(TestChryslerRamHDSafety):
 class ChryslerLongitudinalSafetyBase:
   """openpilot longitudinal: engine torque for accel, ACC_DECEL (m/s^2) for brake.
 
-  Stock ACC does not engage. Resume, accel and decel do, on the falling edge.
-  Cancel, and the brake pedal, disengage. Gas is an override: controls_allowed stays
+  Stock ACC does not engage. Resume, accel and decel do, on the falling edge,
+  and only while ACC main (DAS_3 ACC_AVAILABLE) is on. Cancel, and the brake
+  pedal, disengage. Gas is an override: controls_allowed stays
   set so lateral can continue. The torque request must then be inactive, or the
   stock coast placeholder (about -90 Nm, ACC still active, max and fuel-shutoff bits off).
   Positive torque is not combined with a friction-brake request. Negative torque is.
@@ -371,15 +372,52 @@ class ChryslerLongitudinalSafetyBase:
     self._rx(self._rx_button_msg(cancel=True))
     self.assertFalse(self.safety.get_controls_allowed())
 
+  def _acc_main_msg(self, main_on):
+    # Stock DAS_3, on the bus the ACC module transmits. Bit 20 is ACC main.
+    values = {"ACC_AVAILABLE": 1 if main_on else 0}
+    return self.packer.make_can_msg_safety("DAS_3", self.DAS_BUS, values)
+
   def test_enable_on_falling_edge(self):
     for kwargs in ({"resume": True}, {"accel": True}, {"decel": True}):
       with self.subTest(kwargs=kwargs):
         self.safety.set_controls_allowed(False)
+        self.safety.set_acc_main_on(True)
         self._rx(self._rx_button_msg())
         self._rx(self._rx_button_msg(**kwargs))
         self.assertFalse(self.safety.get_controls_allowed())
         self._rx(self._rx_button_msg())
         self.assertTrue(self.safety.get_controls_allowed())
+
+  def test_button_engage_rejected_with_main_off(self):
+    self.safety.set_controls_allowed(False)
+    self.safety.set_acc_main_on(False)
+    self._rx(self._rx_button_msg())
+    self._rx(self._rx_button_msg(decel=True))
+    self._rx(self._rx_button_msg())
+    self.assertFalse(self.safety.get_controls_allowed())
+
+    self._rx(self._acc_main_msg(True))
+    self.assertTrue(self.safety.get_acc_main_on())
+    self._rx(self._rx_button_msg(decel=True))
+    self.assertFalse(self.safety.get_controls_allowed())
+    self._rx(self._rx_button_msg())
+    self.assertTrue(self.safety.get_controls_allowed())
+
+  def test_acc_main_on_rising_edge_enables_mads_lateral(self):
+    self.safety.set_mads_params(True, False, False)
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
+    self._rx(self._acc_main_msg(False))
+    self.assertFalse(self.safety.get_acc_main_on())
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
+    self._rx(self._acc_main_msg(True))
+    self.assertTrue(self.safety.get_acc_main_on())
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+
+    self.safety.set_mads_params(False, False, False)
+    self._rx(self._acc_main_msg(False))
+    self._rx(self._acc_main_msg(True))
+    self.assertTrue(self.safety.get_acc_main_on())
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
 
   def test_rising_edge_does_not_enable(self):
     self.safety.set_controls_allowed(False)

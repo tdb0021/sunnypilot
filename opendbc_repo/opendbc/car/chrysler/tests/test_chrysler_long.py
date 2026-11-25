@@ -1,9 +1,10 @@
 import unittest
 
+from opendbc.can.packer import CANPacker
 from opendbc.can.parser import CANParser
-from opendbc.car import gen_empty_fingerprint, structs
+from opendbc.car import Bus, gen_empty_fingerprint, structs
 from opendbc.car.chrysler.interface import CarInterface
-from opendbc.car.chrysler.values import CAR, CarControllerParams, ChryslerSafetyFlags
+from opendbc.car.chrysler.values import CAR, DBC, CarControllerParams, ChryslerSafetyFlags
 
 LongCtrlState = structs.CarControl.Actuators.LongControlState
 
@@ -41,6 +42,27 @@ class TestChryslerLongitudinal(unittest.TestCase):
         self.assertFalse(CP.alphaLongitudinalAvailable)
         self.assertFalse(CP.openpilotLongitudinalControl)
         self.assertFalse(CP.safetyConfigs[0].safetyParam & ChryslerSafetyFlags.LONG)
+
+  def test_op_long_ignores_stock_acc_active(self):
+    # Stock ACC on the camera bus can show ACC_ACTIVE because buttons are still
+    # forwarded. openpilot longitudinal must not report that as cruise enabled.
+    for candidate in (CAR.RAM_1500_5TH_GEN, CAR.RAM_HD_5TH_GEN):
+      packer = CANPacker(DBC[candidate][Bus.pt])
+      frames = []
+      for counter in (0, 1):
+        frames.append(packer.make_can_msg("DAS_3", 2, {
+          "ACC_ACTIVE": 1,
+          "ACC_AVAILABLE": 1,
+          "COUNTER": counter,
+        }))
+      for alpha_long in (False, True):
+        with self.subTest(candidate=candidate, alpha_long=alpha_long):
+          CP, CP_SP = _params(candidate, alpha_long=alpha_long)
+          CI = CarInterface(CP, CP_SP)
+          CI.update([])
+          CS, _ = CI.update([(0, frames)])
+          self.assertTrue(CS.cruiseState.available)
+          self.assertEqual(CS.cruiseState.enabled, not alpha_long)
 
   def test_ram_hd_safety_flag_includes_platform(self):
     CP, _ = _params(CAR.RAM_HD_5TH_GEN, alpha_long=True)

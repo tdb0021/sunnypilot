@@ -81,7 +81,10 @@ class CarState(CarStateBase, MadsCarState, CarStateExt):
     cp_cruise = cp_cam if self.CP.carFingerprint in RAM_CARS else cp
 
     ret.cruiseState.available = cp_cruise.vl["DAS_3"]["ACC_AVAILABLE"] == 1
-    ret.cruiseState.enabled = cp_cruise.vl["DAS_3"]["ACC_ACTIVE"] == 1
+    # Stock ACC still sees forwarded buttons and can set ACC_ACTIVE on bus 2.
+    # That frame is not what the powertrain follows while we transmit DAS_3.
+    # Reporting it as enabled makes selfdrived cancel and raise cruiseMismatch.
+    ret.cruiseState.enabled = False if self.CP.openpilotLongitudinalControl else cp_cruise.vl["DAS_3"]["ACC_ACTIVE"] == 1
     ret.cruiseState.speed = cp_cruise.vl["DAS_4"]["ACC_SET_SPEED_KPH"] * CV.KPH_TO_MS
     ret.cruiseState.nonAdaptive = cp_cruise.vl["DAS_4"]["ACC_STATE"] in (1, 2)  # 1 NormalCCOn and 2 NormalCCSet
     ret.cruiseState.standstill = cp_cruise.vl["DAS_3"]["ACC_STANDSTILL"] == 1
