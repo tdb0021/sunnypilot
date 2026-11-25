@@ -71,17 +71,19 @@ def create_lkas_command(packer, CP, apply_torque, lkas_control_bit):
   return packer.make_can_msg("LKAS_COMMAND", 0, values)
 
 
-def create_das_3(packer, acc_active, torque, decel, braking, torque_max=None, fuel_shutoff=None, gr_max_req=0):
+def create_das_3(packer, acc_active, torque, decel, braking, torque_max=None, fuel_shutoff=None, gr_max_req=0, acc_available=False):
   # ENGINE_TORQUE_REQUEST is absolute Nm. It is negative while coasting and while braking.
   # ACC_DECEL uses 3.9943 m/s^2 (raw 4093) as the no-brake value.
   # torque_max and fuel_shutoff follow ACC_ACTIVE while we are commanding, and both drop
   # on a gas override (ACC stays active, the request sits near -90 Nm). Stop/go stays 0.
+  # ACC_AVAILABLE tracks cruise main. The ECM ignores torque and decel when it is 0.
   if torque_max is None:
     torque_max = bool(acc_active)
   if fuel_shutoff is None:
     fuel_shutoff = bool(acc_active)
   values = {
     "ACC_ACTIVE": 1 if acc_active else 0,
+    "ACC_AVAILABLE": 1 if acc_available else 0,
     "ENGINE_TORQUE_REQUEST": torque,
     "ENGINE_TORQUE_REQUEST_MAX": 1 if torque_max else 0,
     "ACC_DECEL": decel,

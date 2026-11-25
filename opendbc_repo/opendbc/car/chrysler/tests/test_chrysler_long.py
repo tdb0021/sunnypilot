@@ -82,6 +82,23 @@ class TestChryslerLongitudinal(unittest.TestCase):
     parser.update([(0, das3[-2:])])
     return parser.vl["DAS_3"]
 
+  def test_acc_available_follows_cruise_main(self):
+    CP, CP_SP = _params(CAR.RAM_HD_5TH_GEN, alpha_long=True)
+    CI = CarInterface(CP, CP_SP)
+    CI.update([])
+    CI.CS.out.vEgo = 25.0
+    CC = structs.CarControl()
+    CC.enabled = True
+    CC.actuators.accel = 1.0
+    CC.actuators.longControlState = LongCtrlState.pid
+
+    for main_on, long_active in ((True, True), (False, True), (True, False), (False, False)):
+      with self.subTest(main_on=main_on, long_active=long_active):
+        CI.CS.out.cruiseState.available = main_on
+        CC.longActive = long_active
+        sig = self._das3(CI, CC)
+        self.assertEqual(sig["ACC_AVAILABLE"], int(main_on))
+
   def test_controller_torque_and_brake(self):
     CP, CP_SP = _params(CAR.RAM_HD_5TH_GEN, alpha_long=True)
     CI = CarInterface(CP, CP_SP)
