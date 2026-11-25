@@ -217,9 +217,11 @@ class TestCruiseAvailableFallingEdge(OpenpilotTestCase):
     mads.update_events(cs)
     return sd
 
-  def test_op_long_active_mads_keeps_lateral(self, mocker):
+  def test_op_long_active_mads_disables_lateral(self, mocker):
+    # The panda exits MADS lateral on the same falling ACC main edge, so openpilot
+    # longitudinal must drop MADS lateral too instead of keeping it up.
     sd = self._edge(mocker, op_long=True, active=True)
-    assert not sd.events_sp.has(EventNameSP.lkasDisable)
+    assert sd.events_sp.has(EventNameSP.lkasDisable)
     assert not sd.events.has(EventName.buttonEnable)
 
   def test_stock_long_still_disables(self, mocker):
