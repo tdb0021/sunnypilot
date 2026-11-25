@@ -1,0 +1,216 @@
+from enum import IntFlag
+from dataclasses import dataclass, field
+
+from opendbc.car import Bus, CarSpecs, DbcDict, PlatformConfig, Platforms, uds
+from opendbc.car.structs import CarParams
+from opendbc.car.docs_definitions import CarHarness, CarDocs, CarParts
+from opendbc.car.fw_query_definitions import FwQueryConfig, Request, p16
+
+Ecu = CarParams.Ecu
+
+
+class ChryslerSafetyFlags(IntFlag):
+  RAM_DT = 1
+  RAM_HD = 2
+  # openpilot longitudinal. Off unless the alpha-long toggle is on, and the
+  # panda only honors it in a non-release build (ALLOW_DEBUG).
+  LONG = 4
+
+
+class ChryslerFlags(IntFlag):
+  # Detected flags
+  HIGHER_MIN_STEERING_SPEED = 1
+  HAS_BSM = 2  # blind spot monitoring
+
+
+@dataclass
+class ChryslerCarDocs(CarDocs):
+  package: str = "Adaptive Cruise Control (ACC)"
+  car_parts: CarParts = field(default_factory=CarParts.common([CarHarness.fca]))
+
+
+@dataclass
+class ChryslerPlatformConfig(PlatformConfig):
+  dbc_dict: DbcDict = field(default_factory=lambda: {
+    Bus.pt: 'chrysler_pacifica_2017_hybrid_generated',
+    Bus.radar: 'chrysler_pacifica_2017_hybrid_private_fusion',
+  })
+
+
+@dataclass(frozen=True)
+class ChryslerCarSpecs(CarSpecs):
+  minSteerSpeed: float = 3.8  # m/s
+
+
+class CAR(Platforms):
+  # Chrysler
+  CHRYSLER_PACIFICA_2018_HYBRID = ChryslerPlatformConfig(
+    [ChryslerCarDocs("Chrysler Pacifica Hybrid 2017-18")],
+    ChryslerCarSpecs(wheelbase=3.089, steerRatio=16.2),
+  )
+  CHRYSLER_PACIFICA_2019_HYBRID = ChryslerPlatformConfig(
+    [ChryslerCarDocs("Chrysler Pacifica Hybrid 2019-25")],
+    CHRYSLER_PACIFICA_2018_HYBRID.specs,
+  )
+  CHRYSLER_PACIFICA_2018 = ChryslerPlatformConfig(
+    [ChryslerCarDocs("Chrysler Pacifica 2017-18")],
+    CHRYSLER_PACIFICA_2018_HYBRID.specs,
+  )
+  CHRYSLER_PACIFICA_2020 = ChryslerPlatformConfig(
+    [
+      ChryslerCarDocs("Chrysler Pacifica 2019-20"),
+      ChryslerCarDocs("Chrysler Pacifica 2021-23", package="All"),
+    ],
+    CHRYSLER_PACIFICA_2018_HYBRID.specs,
+  )
+
+  # Dodge
+  DODGE_DURANGO = ChryslerPlatformConfig(
+    [ChryslerCarDocs("Dodge Durango 2020-21")],
+    CHRYSLER_PACIFICA_2018_HYBRID.specs,
+  )
+
+  # Jeep
+  JEEP_CHEROKEE_5TH_GEN = ChryslerPlatformConfig(
+    [ChryslerCarDocs("Jeep Cherokee 2019-23")],
+    ChryslerCarSpecs(wheelbase=2.70, steerRatio=17.0, minSteerSpeed=18.5),
+    {Bus.pt: 'chrysler_cusw'},
+  )
+  JEEP_GRAND_CHEROKEE = ChryslerPlatformConfig(  # includes 2017 Trailhawk
+    [ChryslerCarDocs("Jeep Grand Cherokee 2016-18", video="https://www.youtube.com/watch?v=eLR9o2JkuRk")],
+    ChryslerCarSpecs(wheelbase=2.71, steerRatio=16.7),
+  )
+
+  JEEP_GRAND_CHEROKEE_2019 = ChryslerPlatformConfig(  # includes 2020 Trailhawk
+    [ChryslerCarDocs("Jeep Grand Cherokee 2019-21")],
+    JEEP_GRAND_CHEROKEE.specs,
+  )
+
+  # Ram
+  RAM_1500_5TH_GEN = ChryslerPlatformConfig(
+    [ChryslerCarDocs("Ram 1500 2019-24", car_parts=CarParts.common([CarHarness.ram]))],
+    ChryslerCarSpecs(wheelbase=3.88, steerRatio=16.3, minSteerSpeed=14.5),
+    {Bus.pt: 'chrysler_ram_dt_generated'},
+  )
+  RAM_HD_5TH_GEN = ChryslerPlatformConfig(
+    [
+      ChryslerCarDocs("Ram 2500 2020-24", car_parts=CarParts.common([CarHarness.ram])),
+      ChryslerCarDocs("Ram 3500 2019-24", car_parts=CarParts.common([CarHarness.ram])),
+    ],
+    ChryslerCarSpecs(wheelbase=3.785, steerRatio=15.61, minSteerSpeed=16.),
+    {Bus.pt: 'chrysler_ram_hd_generated'},
+  )
+
+
+class CarControllerParams:
+  # Safety ceilings. Must match opendbc/safety/modes/chrysler.h.
+  # Friction-brake decel still uses the openpilot standard of -3.5 m/s^2. The only
+  # stock friction-brake samples on the 2020 HD were about -0.3 m/s^2 and under a second.
+  ACCEL_MIN = -3.5           # m/s^2. Stock friction brake reached -2.75; -3.5 is the usual cap.
+  ACCEL_MAX = 2.0            # m/s^2 controller clip. The planner cap is get_pid_accel_limits.
+  MAX_TORQUE = 740.0         # Nm Ram HD safety ceiling (raw 4960). 937 Nm stock kicks stay outside.
+  MIN_TORQUE = -120.0        # Nm. Deepest stock request was -98 Nm.
+  # Stock "no brake" is raw 4093, which decodes to 3.9943 m/s^2. 4.0 packs to raw 4094.
+  INACTIVE_DECEL = 3.9943
+
+  # Friction brake below this. Clip 2 held a friction brake for 4.4 s down to -2.75.
+  BRAKE_ENTER_ACCEL = -0.25  # m/s^2
+  # Below this decel, also send the GR_MAX_REQ=4 stock used at the bottom of the hard stop.
+  HARD_BRAKE_DECEL = -2.0
+  # Stock ACC was never engaged below 3.6 kph, and standstill/go were never set.
+  # Below this speed the controller drops ACC instead of creeping or holding.
+  LOW_SPEED_HANDBACK = 1.0  # m/s
+
+  # First alpha-long drive, 15-28 m/s, flat, brake off. The ECM tracked the request
+  # and the truck still ran 4-6 m/s under set speed: 0.2-0.35 m/s^2 produced ~0 accel.
+  # Hold was ~160-175 Nm in 5th and ~190-270 Nm in 6th. Gain was ~540 Nm per m/s^2
+  # in 5th and ~710 in 6th. 550 and 200 sit between those gears. No gear term yet.
+  # The planner accel cap is (MAX_TORQUE_CMD - TORQUE_OFFSET) / TORQUE_FROM_ACCEL,
+  # (720 - 200) / 550 ≈ 0.945 m/s^2, where this line reaches the command cap.
+  TORQUE_FROM_ACCEL = 550.0  # Nm / (m/s^2)
+  TORQUE_OFFSET = 200.0      # Nm at 0 m/s^2
+  MIN_TORQUE_CMD = -120.0
+  MAX_TORQUE_CMD = 720.0
+  # The DAS_3 engine torque request may rise at most this fast (decreases are not limited).
+  # A 0.07 -> 0.9 m/s^2 planner ramp used to reach 720 Nm in under 2 s at ~1000 rpm, which
+  # made the transmission kick down. 250 Nm/s is 5 Nm per 50 Hz DAS_3 frame.
+  TORQUE_RISE_RATE = 250.0  # Nm/s
+  # Gas override parks the request here. Stock median was about -90 Nm, MAX bit off.
+  GAS_OVERRIDE_TORQUE = -90.0
+  # Sent with ACC_DECEL. The hard stop held about -75 to -88 Nm.
+  BRAKE_TORQUE = -80.0
+  # DAS_5 wheel-torque raw 0. The packer turns a physical 0 Nm into 0x1E57, which
+  # this truck never sends. -7767 Nm is raw 0, bytes 4-5 = 00 00.
+  WHEEL_TORQUE_INACTIVE = -7767.0
+
+  def __init__(self, CP):
+    self.STEER_STEP = 2  # 50 Hz
+    self.STEER_ERROR_MAX = 80
+    if CP.carFingerprint in RAM_HD:
+      self.STEER_DELTA_UP = 14
+      self.STEER_DELTA_DOWN = 14
+      self.STEER_MAX = 361  # higher than this faults the EPS
+    elif CP.carFingerprint in RAM_DT:
+      self.STEER_DELTA_UP = 6
+      self.STEER_DELTA_DOWN = 6
+      self.STEER_MAX = 350  # EPS allows more, up to 350?
+    elif CP.carFingerprint in CUSW_CARS:
+      self.STEER_STEP = 1  # 100 Hz
+      self.STEER_DELTA_UP = 4
+      self.STEER_DELTA_DOWN = 4
+      self.STEER_MAX = 250  # TODO: Some CUSW will go to 261, some not quite, exact boundaries not yet determined
+    else:
+      self.STEER_DELTA_UP = 3
+      self.STEER_DELTA_DOWN = 3
+      self.STEER_MAX = 261  # higher than this faults the EPS
+
+
+STEER_THRESHOLD = 120
+
+RAM_DT = {CAR.RAM_1500_5TH_GEN, }
+RAM_HD = {CAR.RAM_HD_5TH_GEN, }
+RAM_CARS = RAM_DT | RAM_HD
+CUSW_CARS = {CAR.JEEP_CHEROKEE_5TH_GEN, }
+
+
+CHRYSLER_VERSION_REQUEST = bytes([uds.SERVICE_TYPE.READ_DATA_BY_IDENTIFIER]) + \
+  p16(0xf132)
+CHRYSLER_VERSION_RESPONSE = bytes([uds.SERVICE_TYPE.READ_DATA_BY_IDENTIFIER + 0x40]) + \
+  p16(0xf132)
+
+CHRYSLER_SOFTWARE_VERSION_REQUEST = bytes([uds.SERVICE_TYPE.READ_DATA_BY_IDENTIFIER]) + \
+  p16(uds.DATA_IDENTIFIER_TYPE.SYSTEM_SUPPLIER_ECU_SOFTWARE_NUMBER)
+CHRYSLER_SOFTWARE_VERSION_RESPONSE = bytes([uds.SERVICE_TYPE.READ_DATA_BY_IDENTIFIER + 0x40]) + \
+  p16(uds.DATA_IDENTIFIER_TYPE.SYSTEM_SUPPLIER_ECU_SOFTWARE_NUMBER)
+
+CHRYSLER_RX_OFFSET = -0x280
+
+FW_QUERY_CONFIG = FwQueryConfig(
+  fw_version_regex=br"[A-Z0-9_]{10} ?",
+  requests=[
+    Request(
+      [CHRYSLER_VERSION_REQUEST],
+      [CHRYSLER_VERSION_RESPONSE],
+      whitelist_ecus=[Ecu.abs, Ecu.eps, Ecu.srs, Ecu.fwdRadar, Ecu.combinationMeter],
+      rx_offset=CHRYSLER_RX_OFFSET,
+      bus=0,
+    ),
+    Request(
+      [CHRYSLER_VERSION_REQUEST],
+      [CHRYSLER_VERSION_RESPONSE],
+      whitelist_ecus=[Ecu.abs, Ecu.hybrid, Ecu.engine, Ecu.transmission],
+      bus=0,
+    ),
+    Request(
+      [CHRYSLER_SOFTWARE_VERSION_REQUEST],
+      [CHRYSLER_SOFTWARE_VERSION_RESPONSE],
+      whitelist_ecus=[Ecu.engine, Ecu.transmission],
+      bus=0,
+    ),
+  ],
+  extra_ecus=[
+    (Ecu.abs, 0x7e4, None),  # alt address for abs on hybrids, NOTE: not on all hybrid platforms
+  ],
+)
+
+DBC = CAR.create_dbc_map()
