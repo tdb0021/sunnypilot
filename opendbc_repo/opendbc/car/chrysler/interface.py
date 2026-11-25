@@ -3,7 +3,7 @@ from opendbc.car import get_safety_config, scale_tire_stiffness_per_mass, struct
 from opendbc.car.chrysler.carcontroller import CarController
 from opendbc.car.chrysler.carstate import CarState
 from opendbc.car.chrysler.radar_interface import RadarInterface
-from opendbc.car.chrysler.values import CAR, CUSW_CARS, RAM_HD, RAM_DT, RAM_CARS, ChryslerFlags, ChryslerSafetyFlags
+from opendbc.car.chrysler.values import CAR, CUSW_CARS, RAM_HD, RAM_DT, RAM_CARS, CarControllerParams, ChryslerFlags, ChryslerSafetyFlags
 from opendbc.car.interfaces import CarInterfaceBase
 from opendbc.sunnypilot.car.chrysler.values_ext import ChryslerFlagsSP, ChryslerSafetyFlagsSP
 
@@ -14,6 +14,16 @@ class CarInterface(CarInterfaceBase):
   RadarInterface = RadarInterface
 
   DRIVABLE_GEARS = (structs.CarState.GearShifter.low,)
+
+  @staticmethod
+  def get_pid_accel_limits(CP, CP_SP, current_speed, cruise_speed):
+    p = CarControllerParams
+    if CP.openpilotLongitudinalControl:
+      # Torque line reaches the 480 Nm command cap here. A higher planner accel
+      # only winds LongControl's integrator into that clip. Braking min is unchanged.
+      accel_max = (p.MAX_TORQUE_CMD - p.TORQUE_OFFSET) / p.TORQUE_FROM_ACCEL
+      return p.ACCEL_MIN, accel_max
+    return p.ACCEL_MIN, p.ACCEL_MAX
 
   @staticmethod
   def _get_params(ret: structs.CarParams, candidate, fingerprint, car_fw, alpha_long, is_release, docs) -> structs.CarParams:
@@ -95,11 +105,13 @@ class CarInterface(CarInterfaceBase):
         ret.openpilotLongitudinalControl = True
         ret.pcmCruise = False
         ret.safetyConfigs[0].safetyParam |= ChryslerSafetyFlags.LONG.value
-        # 0.5 s is still a guess for Cummins turbo lag. The torque map is the blend of
-        # the two 2020 HD stock-ACC logs (208 Nm per m/s^2 + 133 Nm), clipped under
-        # the 500 Nm safety ceiling. ki stays 0. Below 1 m/s the controller drops ACC;
-        # stock never held a stop with ACC on.
+        # 0.5 s is still a guess for Cummins turbo lag. The torque map is the open-road
+        # fit (550 Nm per m/s^2 + 200 Nm). ki is 0.3 so a speed error can add torque.
+        # get_pid_accel_limits stops the planner where that line hits 480 Nm.
+        # Below 1 m/s the controller drops ACC; stock never held a stop with ACC on.
         ret.longitudinalActuatorDelay = 0.5
+        ret.longitudinalTuning.kiBP = [0.]
+        ret.longitudinalTuning.kiV = [0.3]
 
     return ret
 

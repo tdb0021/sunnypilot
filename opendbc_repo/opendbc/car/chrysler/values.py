@@ -107,7 +107,7 @@ class CarControllerParams:
   # Friction-brake decel still uses the openpilot standard of -3.5 m/s^2. The only
   # stock friction-brake samples on the 2020 HD were about -0.3 m/s^2 and under a second.
   ACCEL_MIN = -3.5           # m/s^2. Stock friction brake reached -2.75; -3.5 is the usual cap.
-  ACCEL_MAX = 2.0            # m/s^2 planner cap. Stock's 937 Nm kick was at ~1.2 m/s^2.
+  ACCEL_MAX = 2.0            # m/s^2 controller clip. The planner cap is get_pid_accel_limits.
   MAX_TORQUE = 500.0         # Nm safety ceiling. 937 Nm stock kicks are not authorized.
   MIN_TORQUE = -120.0        # Nm. Deepest stock request was -98 Nm.
   # Stock "no brake" is raw 4093, which decodes to 3.9943 m/s^2. 4.0 packs to raw 4094.
@@ -121,17 +121,14 @@ class CarControllerParams:
   # Below this speed the controller drops ACC instead of creeping or holding.
   LOW_SPEED_HANDBACK = 1.0  # m/s
 
-  # Sample-weighted blend of the two stock-ACC fits (no driver gas, no friction brake):
-  #   clip 1 n=4320: 122 Nm per m/s^2 + 145 Nm
-  #   clip 2 n=10216: 244 Nm per m/s^2 + 128 Nm (slope pulled by the 937 Nm kick)
-  #   blend: 208 Nm per m/s^2 + 133 Nm
-  # A speed term fit on clip 2 raised R^2 but asked for more torque at low speed, which
-  # is the wrong direction for a launch, and the hold medians are not monotonic in speed
-  # (83 Nm at 60-80 kph, 128 at 80-100, ~150 at 55). No speed term.
-  # At 2.0 m/s^2 the line is 549 Nm and the command cap clips it to 480, under the
-  # 500 Nm safety ceiling. The 937 Nm kick is not reproduced.
-  TORQUE_FROM_ACCEL = 208.0  # Nm / (m/s^2)
-  TORQUE_OFFSET = 133.0      # Nm at 0 m/s^2
+  # First alpha-long drive, 15-28 m/s, flat, brake off. The ECM tracked the request
+  # and the truck still ran 4-6 m/s under set speed: 0.2-0.35 m/s^2 produced ~0 accel.
+  # Hold was ~160-175 Nm in 5th and ~190-270 Nm in 6th. Gain was ~540 Nm per m/s^2
+  # in 5th and ~710 in 6th. 550 and 200 sit between those gears. No gear term yet.
+  # The planner accel cap is (MAX_TORQUE_CMD - TORQUE_OFFSET) / TORQUE_FROM_ACCEL,
+  # about 0.51 m/s^2, so this line reaches the 480 Nm command cap and stops.
+  TORQUE_FROM_ACCEL = 550.0  # Nm / (m/s^2)
+  TORQUE_OFFSET = 200.0      # Nm at 0 m/s^2
   MIN_TORQUE_CMD = -120.0
   MAX_TORQUE_CMD = 480.0
   # Gas override parks the request here. Stock median was about -90 Nm, MAX bit off.

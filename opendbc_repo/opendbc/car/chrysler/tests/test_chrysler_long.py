@@ -26,6 +26,29 @@ class TestChryslerLongitudinal(unittest.TestCase):
         self.assertTrue(CP.pcmCruise)
         self.assertFalse(CP.safetyConfigs[0].safetyParam & ChryslerSafetyFlags.LONG)
 
+  def test_long_tuning_only_when_openpilot_long(self):
+    p = CarControllerParams
+    pid_accel_max = (p.MAX_TORQUE_CMD - p.TORQUE_OFFSET) / p.TORQUE_FROM_ACCEL
+    for candidate in (CAR.RAM_1500_5TH_GEN, CAR.RAM_HD_5TH_GEN):
+      with self.subTest(candidate=candidate, alpha_long=False):
+        CP, CP_SP = _params(candidate, alpha_long=False)
+        self.assertEqual(list(CP.longitudinalTuning.kiV), [0.])
+        self.assertEqual(CarInterface.get_pid_accel_limits(CP, CP_SP, 20., 25.), (p.ACCEL_MIN, p.ACCEL_MAX))
+      with self.subTest(candidate=candidate, alpha_long=True):
+        CP, CP_SP = _params(candidate, alpha_long=True)
+        self.assertEqual(list(CP.longitudinalTuning.kiBP), [0.])
+        self.assertEqual(len(CP.longitudinalTuning.kiV), 1)
+        self.assertAlmostEqual(CP.longitudinalTuning.kiV[0], 0.3)
+        accel_min, accel_max = CarInterface.get_pid_accel_limits(CP, CP_SP, 20., 25.)
+        self.assertEqual(accel_min, p.ACCEL_MIN)
+        self.assertAlmostEqual(accel_max, pid_accel_max)
+        self.assertLess(accel_max, p.ACCEL_MAX)
+
+    for candidate in (CAR.CHRYSLER_PACIFICA_2018, CAR.JEEP_GRAND_CHEROKEE):
+      with self.subTest(candidate=candidate):
+        CP, _ = _params(candidate, alpha_long=True)
+        self.assertEqual(list(CP.longitudinalTuning.kiV), [0.])
+
   def test_toggle_enables_ram_only(self):
     for candidate in (CAR.RAM_1500_5TH_GEN, CAR.RAM_HD_5TH_GEN):
       with self.subTest(candidate=candidate):
@@ -108,10 +131,11 @@ class TestChryslerLongitudinal(unittest.TestCase):
     CC = structs.CarControl()
     CC.enabled = True
     CC.longActive = True
-    CC.actuators.accel = 1.0
+    # 0.2 m/s^2 is under the planner cap, so the request is the line, not the clip.
+    CC.actuators.accel = 0.2
     CC.actuators.longControlState = LongCtrlState.pid
     sig = self._das3(CI, CC)
-    self.assertEqual(sig["ENGINE_TORQUE_REQUEST"], 208.0 + 133.0)
+    self.assertEqual(sig["ENGINE_TORQUE_REQUEST"], 550.0 * 0.2 + 200.0)
     self.assertEqual(sig["ENGINE_TORQUE_REQUEST_MAX"], 1)
     self.assertEqual(sig["DISABLE_FUEL_SHUTOFF"], 1)
     self.assertEqual(sig["GR_MAX_REQ"], 0)
@@ -119,7 +143,7 @@ class TestChryslerLongitudinal(unittest.TestCase):
     self.assertEqual(sig["ACC_DECEL_REQ"], 0)
     self.assertLessEqual(sig["ENGINE_TORQUE_REQUEST"], CarControllerParams.MAX_TORQUE_CMD)
 
-    # The blended line at 2.0 m/s^2 is 549 Nm. The command cap holds it at 480.
+    # At the 2.0 m/s^2 controller clip the line is 1300 Nm. The command cap holds it at 480.
     CC.actuators.accel = 5.0
     sig = self._das3(CI, CC)
     self.assertEqual(sig["ENGINE_TORQUE_REQUEST"], CarControllerParams.MAX_TORQUE_CMD)
@@ -142,7 +166,7 @@ class TestChryslerLongitudinal(unittest.TestCase):
     # Above the friction-brake threshold the command stays on the torque line.
     CC.actuators.accel = -0.1
     sig = self._das3(CI, CC)
-    self.assertAlmostEqual(sig["ENGINE_TORQUE_REQUEST"], 208.0 * -0.1 + 133.0, delta=0.25)
+    self.assertAlmostEqual(sig["ENGINE_TORQUE_REQUEST"], 550.0 * -0.1 + 200.0, delta=0.25)
     self.assertEqual(sig["ACC_DECEL_REQ"], 0)
     self.assertEqual(sig["GR_MAX_REQ"], 0)
     self.assertAlmostEqual(sig["ACC_DECEL"], CarControllerParams.INACTIVE_DECEL, places=3)
