@@ -183,11 +183,7 @@ class ModularAssistiveDrivingSystem:
     if not CS.cruiseState.available and not self.no_main_cruise:
       self.events.remove(EventName.buttonEnable)
       if self.selfdrive.CS_prev.cruiseState.available:
-        # openpilot longitudinal cancels stock ACC on purpose. That falling
-        # cruise-available edge is lkasDisable (userDisable). Do not drop MADS
-        # lateral that is already active. Other cars and inactive MADS stay as they were.
-        if not (self.CP.openpilotLongitudinalControl and self.active):
-          self.events_sp.add(EventNameSP.lkasDisable)
+        self.events_sp.add(EventNameSP.lkasDisable)
 
     if self.steering_mode_on_brake == MadsSteeringModeOnBrake.DISENGAGE:
       if self.pedal_pressed_non_gas_pressed(CS):

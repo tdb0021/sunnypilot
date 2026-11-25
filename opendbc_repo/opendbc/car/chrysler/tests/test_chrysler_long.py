@@ -102,47 +102,40 @@ class TestChryslerLongitudinal(unittest.TestCase):
     CS, _ = CI.update([(0, [das, esp])])
     return CS
 
-  def test_available_debounce_only_when_openpilot_long(self):
+  def test_available_is_raw_stock_main(self):
+    # available follows the stock DAS_3 ACC_AVAILABLE on the frame it changes, with or
+    # without openpilot long. No hold, and ESP_1 ACC_Enabled (an echo of our own DAS_3)
+    # must not keep it up. The panda exits MADS lateral on the same edge.
     packer = CANPacker(DBC[CAR.RAM_HD_5TH_GEN][Bus.pt])
+    for alpha_long in (False, True):
+      with self.subTest(alpha_long=alpha_long):
+        CP, CP_SP = _params(CAR.RAM_HD_5TH_GEN, alpha_long=alpha_long)
+        CI = CarInterface(CP, CP_SP)
+        CI.update([])
+        state = {"ctr": 0, "available": 1, "active": 0, "enabled": 1}
+        CS = self._cruise_step(CI, packer, state)
+        self.assertTrue(CS.cruiseState.available)
+        self.assertTrue(CI.CS.stock_acc_available)
+        state["available"] = 0
+        for _ in range(60):
+          CS = self._cruise_step(CI, packer, state)
+          self.assertFalse(CS.cruiseState.available)
+          self.assertFalse(CI.CS.stock_acc_available)
+        state["available"] = 1
+        CS = self._cruise_step(CI, packer, state)
+        self.assertTrue(CS.cruiseState.available)
 
-    # Stock long reports ACC_AVAILABLE on the frame it changes.
+    # Stock ACC active only reports enabled when openpilot long is off.
     CP, CP_SP = _params(CAR.RAM_HD_5TH_GEN, alpha_long=False)
     CI = CarInterface(CP, CP_SP)
     CI.update([])
     state = {"ctr": 0, "available": 1, "active": 1, "enabled": 1}
     CS = self._cruise_step(CI, packer, state)
-    self.assertTrue(CS.cruiseState.available)
+    self.assertTrue(CS.cruiseState.enabled)
     state["available"] = 0
     CS = self._cruise_step(CI, packer, state)
     self.assertFalse(CS.cruiseState.available)
     self.assertTrue(CS.cruiseState.enabled)
-
-    # openpilot long holds available through a stock main-off until it has lasted
-    # more than 0.5 s and ESP_1 ACC_Enabled is also 0.
-    CP, CP_SP = _params(CAR.RAM_HD_5TH_GEN, alpha_long=True)
-    CI = CarInterface(CP, CP_SP)
-    CI.update([])
-    state = {"ctr": 0, "available": 1, "active": 0, "enabled": 1}
-    CS = self._cruise_step(CI, packer, state)
-    self.assertTrue(CS.cruiseState.available)
-    self.assertFalse(CI.CS.stock_acc_active)
-    state["available"] = 0
-    state["enabled"] = 0
-    for _ in range(50):
-      CS = self._cruise_step(CI, packer, state)
-      self.assertTrue(CS.cruiseState.available)
-    CS = self._cruise_step(CI, packer, state)
-    self.assertFalse(CS.cruiseState.available)
-
-    # ESP still reporting ACC enabled keeps available up past 0.5 s.
-    state = {"ctr": 0, "available": 1, "active": 1, "enabled": 1}
-    CS = self._cruise_step(CI, packer, state)
-    self.assertTrue(CS.cruiseState.available)
-    self.assertTrue(CI.CS.stock_acc_active)
-    state["available"] = 0
-    for _ in range(60):
-      CS = self._cruise_step(CI, packer, state)
-      self.assertTrue(CS.cruiseState.available)
 
   def test_stock_acc_cancel_rate_limit(self):
     # 0x23A present selects the standard HD buttons. An empty fingerprint uses the alt address.
@@ -205,7 +198,8 @@ class TestChryslerLongitudinal(unittest.TestCase):
 
     for main_on, long_active in ((True, True), (False, True), (True, False), (False, False)):
       with self.subTest(main_on=main_on, long_active=long_active):
-        CI.CS.out.cruiseState.available = main_on
+        CI.CS.stock_acc_available = main_on
+        CI.CS.out.cruiseState.available = not main_on  # must not be used for our ACC_AVAILABLE bit
         CC.longActive = long_active
         sig = self._das3(CI, CC)
         self.assertEqual(sig["ACC_AVAILABLE"], int(main_on))

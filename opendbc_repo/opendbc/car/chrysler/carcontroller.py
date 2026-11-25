@@ -162,7 +162,7 @@ class CarController(CarControllerBase, MadsCarController, CarControllerExt, Inte
     # DAS_3 and DAS_5 are 50 Hz on this truck. DAS_3's counter is the real one.
     if self.frame % 2 == 0:
       sends.append(chryslercan.create_das_3(self.packer, active, torque, decel, braking,
-                                            torque_max, fuel_shutoff, gr_max, CS.out.cruiseState.available))
+                                            torque_max, fuel_shutoff, gr_max, CS.stock_acc_available))
       sends.append(chryslercan.create_das_5(self.packer, CS.out.vEgo))
     # DAS_4 was ~17 Hz in the log. 10 Hz is enough for the set-speed display.
     if self.frame % 10 == 0:

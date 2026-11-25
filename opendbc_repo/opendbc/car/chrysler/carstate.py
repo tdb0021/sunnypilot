@@ -1,5 +1,5 @@
 from opendbc.can import CANDefine, CANParser
-from opendbc.car import Bus, DT_CTRL, create_button_events, structs
+from opendbc.car import Bus, create_button_events, structs
 from opendbc.car.chrysler.values import CUSW_CARS, DBC, STEER_THRESHOLD, RAM_CARS, ChryslerFlags
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarStateBase
@@ -29,7 +29,7 @@ class CarState(CarStateBase, MadsCarState, CarStateExt):
 
     self.distance_button = 0
     self.stock_acc_active = False
-    self._acc_available_off_frames = 0
+    self.stock_acc_available = False
 
   def update(self, can_parsers) -> tuple[structs.CarState, structs.CarStateSP]:
     cp = can_parsers[Bus.pt]
@@ -82,28 +82,18 @@ class CarState(CarStateBase, MadsCarState, CarStateExt):
     # cruise state
     cp_cruise = cp_cam if self.CP.carFingerprint in RAM_CARS else cp
 
-    stock_acc_available = cp_cruise.vl["DAS_3"]["ACC_AVAILABLE"] == 1
-    # Bus 2 for RAM. The controller cancels stock ACC from this, without treating it as engaged.
+    # Raw stock DAS_3 (bus 2 for RAM). available is used as-is, with no hold: the panda
+    # (mads.h) exits lateral on the same falling ACC_AVAILABLE edge, so they have to agree.
+    # It is also what our own DAS_3 ACC_AVAILABLE bit is built from. Do not derive it from
+    # ESP_1 ACC_Enabled, which only echoes our DAS_3.
+    self.stock_acc_available = cp_cruise.vl["DAS_3"]["ACC_AVAILABLE"] == 1
+    # The controller cancels stock ACC from this, without treating it as engaged.
     self.stock_acc_active = cp_cruise.vl["DAS_3"]["ACC_ACTIVE"] == 1
     # Stock ACC still sees forwarded buttons and can set ACC_ACTIVE on bus 2.
     # That frame is not what the powertrain follows while we transmit DAS_3.
     # Reporting it as enabled makes selfdrived cancel and raise cruiseMismatch.
     ret.cruiseState.enabled = False if self.CP.openpilotLongitudinalControl else self.stock_acc_active
-    if self.CP.openpilotLongitudinalControl:
-      # A stock DASM fault clears ACC_AVAILABLE for a moment and then drops main.
-      # Hold available until that has lasted more than 0.5 s and ESP also says ACC is off.
-      acc_enabled = cp.vl["ESP_1"]["ACC_Enabled"] == 1
-      if stock_acc_available:
-        self._acc_available_off_frames = 0
-        ret.cruiseState.available = True
-      else:
-        self._acc_available_off_frames += 1
-        if self._acc_available_off_frames * DT_CTRL > 0.5 and not acc_enabled:
-          ret.cruiseState.available = False
-        else:
-          ret.cruiseState.available = self.out.cruiseState.available
-    else:
-      ret.cruiseState.available = stock_acc_available
+    ret.cruiseState.available = self.stock_acc_available
     ret.cruiseState.speed = cp_cruise.vl["DAS_4"]["ACC_SET_SPEED_KPH"] * CV.KPH_TO_MS
     ret.cruiseState.nonAdaptive = cp_cruise.vl["DAS_4"]["ACC_STATE"] in (1, 2)  # 1 NormalCCOn and 2 NormalCCSet
     ret.cruiseState.standstill = cp_cruise.vl["DAS_3"]["ACC_STANDSTILL"] == 1
