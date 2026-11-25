@@ -231,7 +231,7 @@ class TestChryslerLongitudinal(unittest.TestCase):
     self.assertEqual(sig["ACC_DECEL_REQ"], 0)
     self.assertLessEqual(sig["ENGINE_TORQUE_REQUEST"], CarControllerParams.MAX_TORQUE_CMD)
 
-    # At the 2.0 m/s^2 controller clip the line is 1300 Nm. The command cap holds it at 480.
+    # At the 2.0 m/s^2 controller clip the line is 1300 Nm. The command cap holds it at 720.
     CC.actuators.accel = 5.0
     sig = self._das3(CI, CC)
     self.assertEqual(sig["ENGINE_TORQUE_REQUEST"], CarControllerParams.MAX_TORQUE_CMD)

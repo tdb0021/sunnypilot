@@ -81,11 +81,13 @@ static uint32_t chrysler_cruise_button_addr = 0U;
 // 2000 = 0 Nm, sent when ACC is not engaged.
 // 1520 = -120 Nm. Deepest stock request was -98 Nm; -120 leaves a little room.
 // 1800 = -50 Nm, top of the gas-override coast band (stock sits near -90).
-// 4000 = 500 Nm. Stock did ask for 937 Nm on a kick; that stays outside this cap.
+// 4000 = 500 Nm. Ram HD long uses 4960 = 740 Nm: (740 + 500) / 0.25.
+// 937 Nm stock kicks stay outside both caps. The negative floor is unchanged.
 #define CHRYSLER_TORQUE_INACTIVE      2000
 #define CHRYSLER_TORQUE_MIN           1520
 #define CHRYSLER_TORQUE_OVERRIDE_MAX  1800
 #define CHRYSLER_TORQUE_MAX           4000
+#define CHRYSLER_TORQUE_MAX_RAM_HD    4960
 // DAS_3 ACC_DECEL: 12-bit Motorola at bit 19, 0.004885 m/s^2, offset -16.
 // Packer: -3.5 -> 2559, 0.0 -> 3275.
 // Stock "no brake" is raw 4093 = 3.9943 m/s^2, not the 4.0 that packs to 4094.
@@ -229,11 +231,12 @@ static bool chrysler_tx_hook(const CANPacket_t *msg) {
   // (00000a3e--51571a2b07 and 00000a3f--f3c4bf6816):
   // coast and braking both use a negative torque request, friction braking is
   // ACC_DECEL down to about -2.75 m/s^2, and a gas pedal keeps ACC engaged while
-  // the request sits near -90 Nm. The safety ceiling stays 500 Nm. Stock did
-  // request 937 Nm on one kick; that is intentionally not allowed.
+  // the request sits near -90 Nm. Ram HD may command up to 740 Nm. Other
+  // platforms stay at 500 Nm. A 937 Nm stock kick is still not allowed.
   if (msg->addr == CHRYSLER_ADDR(DAS_3)) {
+    const int torque_max = (chrysler_platform == CHRYSLER_RAM_HD) ? CHRYSLER_TORQUE_MAX_RAM_HD : CHRYSLER_TORQUE_MAX;
     const LongitudinalLimits CHRYSLER_LONG_LIMITS = {
-      .max_gas = CHRYSLER_TORQUE_MAX,
+      .max_gas = torque_max,
       .min_gas = CHRYSLER_TORQUE_MIN,
       .inactive_gas = CHRYSLER_TORQUE_INACTIVE,
       .max_accel = CHRYSLER_DECEL_MAX,

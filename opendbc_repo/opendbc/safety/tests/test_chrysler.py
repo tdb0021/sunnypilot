@@ -306,15 +306,16 @@ class ChryslerLongitudinalSafetyBase:
       self.assertFalse(self._tx(self._decel_msg(4.0)))
 
   def test_stock_coast_torque_allowed(self):
-    # Deepest stock request was -98 Nm. -120 is the floor. 937 Nm was a real kick
-    # and stays outside the 500 Nm ceiling, as does the 532.5 Nm cancel blip.
+    # Deepest stock request was -98 Nm. -120 is the floor. 937 Nm stays outside
+    # every cap. 532.5 Nm is outside the 500 Nm cap and inside the Ram HD 740 Nm cap.
     self.safety.set_controls_allowed(True)
     self.assertTrue(self._tx(self._torque_msg(-98)))
     self.assertTrue(self._tx(self._torque_msg(-120)))
     self.assertFalse(self._tx(self._torque_msg(-121)))
-    self.assertFalse(self._tx(self._torque_msg(532.5)))
+    self.assertEqual(self._tx(self._torque_msg(532.5)), 532.5 <= self.MAX_ENGINE_TORQUE)
+    self.assertTrue(self._tx(self._torque_msg(self.MAX_ENGINE_TORQUE)))
+    self.assertFalse(self._tx(self._torque_msg(self.MAX_ENGINE_TORQUE + 1)))
     self.assertFalse(self._tx(self._torque_msg(937)))
-    self.assertTrue(self._tx(self._torque_msg(480)))
     self.safety.set_controls_allowed(False)
     self.assertFalse(self._tx(self._torque_msg(-98)))
 
@@ -481,6 +482,8 @@ class TestChryslerRamHDLongitudinalSafety(ChryslerLongitudinalSafetyBase, TestCh
   RELAY_MALFUNCTION_ADDRS = {0: (0x276, 0x275, 0x1F4, 0x1F5, 0x271)}
   FWD_BLACKLISTED_ADDRS = {2: [0x275, 0x276, 0x1F4, 0x1F5, 0x271]}
   SAFETY_PARAM = ChryslerSafetyFlags.RAM_HD | ChryslerSafetyFlags.LONG
+  # (740 + 500) / 0.25 = 4960. Pacifica and Ram 1500 stay at 500 Nm.
+  MAX_ENGINE_TORQUE = 740.0
 
 
 class TestChryslerRamHDAltButtonLongitudinalSafety(TestChryslerRamHDLongitudinalSafety):

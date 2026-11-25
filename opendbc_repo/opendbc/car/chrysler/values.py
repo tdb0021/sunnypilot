@@ -108,7 +108,7 @@ class CarControllerParams:
   # stock friction-brake samples on the 2020 HD were about -0.3 m/s^2 and under a second.
   ACCEL_MIN = -3.5           # m/s^2. Stock friction brake reached -2.75; -3.5 is the usual cap.
   ACCEL_MAX = 2.0            # m/s^2 controller clip. The planner cap is get_pid_accel_limits.
-  MAX_TORQUE = 500.0         # Nm safety ceiling. 937 Nm stock kicks are not authorized.
+  MAX_TORQUE = 740.0         # Nm Ram HD safety ceiling (raw 4960). 937 Nm stock kicks stay outside.
   MIN_TORQUE = -120.0        # Nm. Deepest stock request was -98 Nm.
   # Stock "no brake" is raw 4093, which decodes to 3.9943 m/s^2. 4.0 packs to raw 4094.
   INACTIVE_DECEL = 3.9943
@@ -126,11 +126,11 @@ class CarControllerParams:
   # Hold was ~160-175 Nm in 5th and ~190-270 Nm in 6th. Gain was ~540 Nm per m/s^2
   # in 5th and ~710 in 6th. 550 and 200 sit between those gears. No gear term yet.
   # The planner accel cap is (MAX_TORQUE_CMD - TORQUE_OFFSET) / TORQUE_FROM_ACCEL,
-  # about 0.51 m/s^2, so this line reaches the 480 Nm command cap and stops.
+  # (720 - 200) / 550 ≈ 0.945 m/s^2, where this line reaches the command cap.
   TORQUE_FROM_ACCEL = 550.0  # Nm / (m/s^2)
   TORQUE_OFFSET = 200.0      # Nm at 0 m/s^2
   MIN_TORQUE_CMD = -120.0
-  MAX_TORQUE_CMD = 480.0
+  MAX_TORQUE_CMD = 720.0
   # Gas override parks the request here. Stock median was about -90 Nm, MAX bit off.
   GAS_OVERRIDE_TORQUE = -90.0
   # Sent with ACC_DECEL. The hard stop held about -75 to -88 Nm.
