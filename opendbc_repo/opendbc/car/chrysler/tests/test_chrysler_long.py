@@ -86,6 +86,94 @@ class TestChryslerLongitudinal(unittest.TestCase):
           CS, _ = CI.update([(0, frames)])
           self.assertTrue(CS.cruiseState.available)
           self.assertEqual(CS.cruiseState.enabled, not alpha_long)
+          self.assertTrue(CI.CS.stock_acc_active)
+
+  def _cruise_step(self, CI, packer, state):
+    state["ctr"] = (state["ctr"] + 1) & 0xF
+    das = packer.make_can_msg("DAS_3", 2, {
+      "ACC_AVAILABLE": int(state["available"]),
+      "ACC_ACTIVE": int(state["active"]),
+      "COUNTER": state["ctr"],
+    })
+    esp = packer.make_can_msg("ESP_1", 0, {
+      "ACC_Enabled": int(state["enabled"]),
+      "COUNTER": state["ctr"],
+    })
+    CS, _ = CI.update([(0, [das, esp])])
+    return CS
+
+  def test_available_debounce_only_when_openpilot_long(self):
+    packer = CANPacker(DBC[CAR.RAM_HD_5TH_GEN][Bus.pt])
+
+    # Stock long reports ACC_AVAILABLE on the frame it changes.
+    CP, CP_SP = _params(CAR.RAM_HD_5TH_GEN, alpha_long=False)
+    CI = CarInterface(CP, CP_SP)
+    CI.update([])
+    state = {"ctr": 0, "available": 1, "active": 1, "enabled": 1}
+    CS = self._cruise_step(CI, packer, state)
+    self.assertTrue(CS.cruiseState.available)
+    state["available"] = 0
+    CS = self._cruise_step(CI, packer, state)
+    self.assertFalse(CS.cruiseState.available)
+    self.assertTrue(CS.cruiseState.enabled)
+
+    # openpilot long holds available through a stock main-off until it has lasted
+    # more than 0.5 s and ESP_1 ACC_Enabled is also 0.
+    CP, CP_SP = _params(CAR.RAM_HD_5TH_GEN, alpha_long=True)
+    CI = CarInterface(CP, CP_SP)
+    CI.update([])
+    state = {"ctr": 0, "available": 1, "active": 0, "enabled": 1}
+    CS = self._cruise_step(CI, packer, state)
+    self.assertTrue(CS.cruiseState.available)
+    self.assertFalse(CI.CS.stock_acc_active)
+    state["available"] = 0
+    state["enabled"] = 0
+    for _ in range(50):
+      CS = self._cruise_step(CI, packer, state)
+      self.assertTrue(CS.cruiseState.available)
+    CS = self._cruise_step(CI, packer, state)
+    self.assertFalse(CS.cruiseState.available)
+
+    # ESP still reporting ACC enabled keeps available up past 0.5 s.
+    state = {"ctr": 0, "available": 1, "active": 1, "enabled": 1}
+    CS = self._cruise_step(CI, packer, state)
+    self.assertTrue(CS.cruiseState.available)
+    self.assertTrue(CI.CS.stock_acc_active)
+    state["available"] = 0
+    for _ in range(60):
+      CS = self._cruise_step(CI, packer, state)
+      self.assertTrue(CS.cruiseState.available)
+
+  def test_stock_acc_cancel_rate_limit(self):
+    # 0x23A present selects the standard HD buttons. An empty fingerprint uses the alt address.
+    fingerprint = gen_empty_fingerprint()
+    fingerprint[0][0x23A] = 8
+    CP = CarInterface.get_params(CAR.RAM_HD_5TH_GEN, fingerprint, [], alpha_long=True, is_release=False, docs=False)
+    CP_SP = CarInterface.get_params_sp(CP, CAR.RAM_HD_5TH_GEN, fingerprint, [], alpha_long=True, is_release_sp=False, docs=False)
+    CI = CarInterface(CP, CP_SP)
+    CI.update([])
+    self.assertEqual(CI.CS.cruise_btns, "CRUISE_BUTTONS")
+    CI.CS.stock_acc_active = True
+    CC = structs.CarControl()
+    sent_at = []
+    for i in range(20):
+      _, sends = CI.apply(CC.as_reader(), structs.CarControlSP(), 0)
+      buttons = [msg for msg in sends if msg[0] == 0x23A]
+      if not buttons:
+        continue
+      self.assertEqual(len(buttons), 1)
+      addr, dat, bus = buttons[0]
+      self.assertEqual(addr, 0x23A)
+      self.assertEqual(bus, 2)
+      self.assertEqual(dat[0] & 0x1, 1)
+      sent_at.append(i)
+    # Shared with the existing button path: (frame - last) * 0.01 > 0.05, so every 6 frames.
+    self.assertEqual(sent_at, [6, 12, 18])
+
+    CI.CS.stock_acc_active = False
+    for _ in range(20):
+      _, sends = CI.apply(CC.as_reader(), structs.CarControlSP(), 0)
+      self.assertFalse(any(msg[0] == 0x23A for msg in sends))
 
   def test_ram_hd_safety_flag_includes_platform(self):
     CP, _ = _params(CAR.RAM_HD_5TH_GEN, alpha_long=True)

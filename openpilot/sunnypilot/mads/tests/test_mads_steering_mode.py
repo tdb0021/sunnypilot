@@ -203,6 +203,34 @@ class TestRemainActiveMode(OpenpilotTestCase):
     assert mads.state_machine.state == State.enabled
 
 
+# cruise available falling edge
+
+class TestCruiseAvailableFallingEdge(OpenpilotTestCase):
+  def _edge(self, mocker, op_long, active):
+    mads, sd = make_mads(mocker, MadsSteeringModeOnBrake.REMAIN_ACTIVE)
+    mads.CP.openpilotLongitudinalControl = op_long
+    mads.active = active
+    sd.CS_prev = make_car_state()
+    sd.events.add(EventName.buttonEnable)
+    cs = make_car_state()
+    cs.cruiseState.available = False
+    mads.update_events(cs)
+    return sd
+
+  def test_op_long_active_mads_keeps_lateral(self, mocker):
+    sd = self._edge(mocker, op_long=True, active=True)
+    assert not sd.events_sp.has(EventNameSP.lkasDisable)
+    assert not sd.events.has(EventName.buttonEnable)
+
+  def test_stock_long_still_disables(self, mocker):
+    sd = self._edge(mocker, op_long=False, active=True)
+    assert sd.events_sp.has(EventNameSP.lkasDisable)
+
+  def test_op_long_inactive_mads_still_disables(self, mocker):
+    sd = self._edge(mocker, op_long=True, active=False)
+    assert sd.events_sp.has(EventNameSP.lkasDisable)
+
+
 # lateral mismatch counter
 
 class TestLateralMismatchCounter(OpenpilotTestCase):
