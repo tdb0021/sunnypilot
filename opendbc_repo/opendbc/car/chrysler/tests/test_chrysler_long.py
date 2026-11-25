@@ -186,6 +186,127 @@ class TestChryslerLongitudinal(unittest.TestCase):
     parser.update([(0, das3[-2:])])
     return parser.vl["DAS_3"]
 
+  def _torques(self, CI, CC, n_apply):
+    """Run n_apply controller frames and return the DAS_3 ENGINE_TORQUE_REQUEST (Nm) of each frame sent."""
+    out = []
+    for _ in range(n_apply):
+      _, sends = CI.apply(CC.as_reader(), structs.CarControlSP(), 0)
+      for addr, dat, _bus in sends:
+        if addr == 0x1F4:
+          raw = ((dat[0] & 0x1F) << 8) | dat[1]  # 13 bits, MSB at bit 4 of byte 0
+          out.append(raw * 0.25 - 500.0)
+    return out
+
+  def _settled_das3(self, CI, CC):
+    # The torque request ramps up at TORQUE_RISE_RATE, so let it get there first.
+    self._torques(CI, CC, 260)
+    return self._das3(CI, CC)
+
+  def _long_ci(self, vego=25.0):
+    CP, CP_SP = _params(CAR.RAM_HD_5TH_GEN, alpha_long=True)
+    CI = CarInterface(CP, CP_SP)
+    CI.update([])
+    CI.CS.out.vEgo = vego
+    CC = structs.CarControl()
+    CC.enabled = True
+    CC.longActive = True
+    CC.actuators.longControlState = LongCtrlState.pid
+    return CI, CC
+
+  def test_torque_rise_step_is_250_nm_per_second(self):
+    p = CarControllerParams
+    self.assertEqual(p.TORQUE_RISE_RATE, 250.0)
+    CI, CC = self._long_ci()
+    CC.actuators.accel = 0.2  # 310 Nm
+    self._torques(CI, CC, 120)
+    self.assertEqual(self._torques(CI, CC, 2), [310.0])
+    # DAS_3 is 50 Hz, so 250 Nm/s is 5 Nm (20 raw counts) per frame.
+    CC.actuators.accel = 5.0  # clipped to MAX_TORQUE_CMD
+    seq = self._torques(CI, CC, 200)
+    steps = [b - a for a, b in zip([310.0] + seq, seq, strict=False)]
+    self.assertEqual(len(seq), 100)
+    self.assertTrue(all(abs(st - 5.0) < 1e-9 for st in steps[:81]), steps[:5])
+    self.assertEqual(seq[0], 315.0)
+    self.assertEqual(seq[-1], p.MAX_TORQUE_CMD)
+    self.assertLess(max(seq), p.MAX_TORQUE)
+    # 310 -> 720 Nm takes 82 frames, 1.64 s.
+    self.assertEqual(sum(1 for t in seq if t < p.MAX_TORQUE_CMD), 81)
+    self.assertTrue(all(0 <= b - a <= 5.0 + 1e-9 for a, b in zip(seq, seq[1:], strict=False)))
+
+  def test_torque_decrease_is_not_limited(self):
+    CI, CC = self._long_ci()
+    CC.actuators.accel = 5.0
+    self._torques(CI, CC, 260)
+    self.assertEqual(self._torques(CI, CC, 2), [CarControllerParams.MAX_TORQUE_CMD])
+    CC.actuators.accel = -0.1  # 145 Nm, still above the friction-brake threshold
+    self.assertEqual(self._torques(CI, CC, 2)[0], 550.0 * -0.1 + 200.0)
+    CC.actuators.accel = 0.2
+    self._torques(CI, CC, 40)
+    CC.actuators.accel = 0.0
+    self.assertEqual(self._torques(CI, CC, 2)[0], CarControllerParams.TORQUE_OFFSET)
+
+  def test_torque_ramp_starts_from_brake_torque_after_brake_mode(self):
+    p = CarControllerParams
+    CI, CC = self._long_ci()
+    CC.actuators.accel = -1.0
+    seq = self._torques(CI, CC, 20)
+    self.assertTrue(all(t == p.BRAKE_TORQUE for t in seq))
+    # Leaving brake mode with a big request: no jump from -80 Nm.
+    CC.actuators.accel = 0.9  # 695 Nm
+    seq = self._torques(CI, CC, 40)
+    self.assertEqual(seq[0], p.BRAKE_TORQUE + 5.0)
+    self.assertEqual(seq[1], p.BRAKE_TORQUE + 10.0)
+    self.assertTrue(all(abs((b - a) - 5.0) < 1e-9 for a, b in zip(seq, seq[1:], strict=False)))
+    # Dropping back into brake mode mid-ramp resets to the brake torque, then ramps again.
+    CC.actuators.accel = -0.5
+    self.assertEqual(self._torques(CI, CC, 2), [p.BRAKE_TORQUE])
+    CC.actuators.accel = 0.9
+    self.assertEqual(self._torques(CI, CC, 2), [p.BRAKE_TORQUE + 5.0])
+
+  def test_torque_ramp_resets_on_engage_disengage_and_gas_override(self):
+    p = CarControllerParams
+    CI, CC = self._long_ci()
+    CC.actuators.accel = 0.9  # 695 Nm
+    seq = self._torques(CI, CC, 12)
+    # Fresh engage starts at the zero-accel hold torque, not 0 and not the full request.
+    self.assertEqual(seq[:3], [p.TORQUE_OFFSET, p.TORQUE_OFFSET + 5.0, p.TORQUE_OFFSET + 10.0])
+    self.assertIsNotNone(CI.CC.torque_last)
+
+    # Disengage drops to 0 and clears the ramp. Re-engage starts again from the hold torque.
+    CC.longActive = False
+    seq = self._torques(CI, CC, 4)
+    self.assertTrue(all(t == 0.0 for t in seq))
+    self.assertIsNone(CI.CC.torque_last)
+    CC.longActive = True
+    self.assertEqual(self._torques(CI, CC, 2), [p.TORQUE_OFFSET])
+
+    # Gas override parks at -90 Nm and clears the ramp; releasing the pedal does not resume the old
+    # value and does not start from -90 Nm either.
+    self._torques(CI, CC, 60)
+    self.assertGreater(CI.CC.torque_last, p.TORQUE_OFFSET + 50)
+    CI.CS.out.gasPressed = True
+    seq = self._torques(CI, CC, 4)
+    self.assertTrue(all(t == p.GAS_OVERRIDE_TORQUE for t in seq))
+    self.assertIsNone(CI.CC.torque_last)
+    CI.CS.out.gasPressed = False
+    self.assertEqual(self._torques(CI, CC, 2), [p.TORQUE_OFFSET])
+
+    # Brake pedal and the low-speed handback also clear it.
+    self._torques(CI, CC, 20)
+    CI.CS.out.brakePressed = True
+    self._torques(CI, CC, 4)
+    self.assertIsNone(CI.CC.torque_last)
+    CI.CS.out.brakePressed = False
+    CI.CS.out.vEgo = 0.5
+    self._torques(CI, CC, 4)
+    self.assertIsNone(CI.CC.torque_last)
+
+  def test_low_requests_are_not_delayed_by_the_ramp(self):
+    # A request at or below the hold torque is sent as is, also on a fresh engage.
+    CI, CC = self._long_ci()
+    CC.actuators.accel = -0.1  # 145 Nm
+    self.assertEqual(self._torques(CI, CC, 2), [145.0])
+
   def test_acc_available_follows_cruise_main(self):
     CP, CP_SP = _params(CAR.RAM_HD_5TH_GEN, alpha_long=True)
     CI = CarInterface(CP, CP_SP)
@@ -216,7 +337,7 @@ class TestChryslerLongitudinal(unittest.TestCase):
     # 0.2 m/s^2 is under the planner cap, so the request is the line, not the clip.
     CC.actuators.accel = 0.2
     CC.actuators.longControlState = LongCtrlState.pid
-    sig = self._das3(CI, CC)
+    sig = self._settled_das3(CI, CC)
     self.assertEqual(sig["ENGINE_TORQUE_REQUEST"], 550.0 * 0.2 + 200.0)
     self.assertEqual(sig["ENGINE_TORQUE_REQUEST_MAX"], 1)
     self.assertEqual(sig["DISABLE_FUEL_SHUTOFF"], 1)
@@ -227,7 +348,7 @@ class TestChryslerLongitudinal(unittest.TestCase):
 
     # At the 2.0 m/s^2 controller clip the line is 1300 Nm. The command cap holds it at 720.
     CC.actuators.accel = 5.0
-    sig = self._das3(CI, CC)
+    sig = self._settled_das3(CI, CC)
     self.assertEqual(sig["ENGINE_TORQUE_REQUEST"], CarControllerParams.MAX_TORQUE_CMD)
     self.assertLess(sig["ENGINE_TORQUE_REQUEST"], CarControllerParams.MAX_TORQUE)
 
@@ -247,7 +368,7 @@ class TestChryslerLongitudinal(unittest.TestCase):
 
     # Above the friction-brake threshold the command stays on the torque line.
     CC.actuators.accel = -0.1
-    sig = self._das3(CI, CC)
+    sig = self._settled_das3(CI, CC)
     self.assertAlmostEqual(sig["ENGINE_TORQUE_REQUEST"], 550.0 * -0.1 + 200.0, delta=0.25)
     self.assertEqual(sig["ACC_DECEL_REQ"], 0)
     self.assertEqual(sig["GR_MAX_REQ"], 0)

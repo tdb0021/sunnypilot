@@ -131,6 +131,10 @@ class CarControllerParams:
   TORQUE_OFFSET = 200.0      # Nm at 0 m/s^2
   MIN_TORQUE_CMD = -120.0
   MAX_TORQUE_CMD = 720.0
+  # The DAS_3 engine torque request may rise at most this fast (decreases are not limited).
+  # A 0.07 -> 0.9 m/s^2 planner ramp used to reach 720 Nm in under 2 s at ~1000 rpm, which
+  # made the transmission kick down. 250 Nm/s is 5 Nm per 50 Hz DAS_3 frame.
+  TORQUE_RISE_RATE = 250.0  # Nm/s
   # Gas override parks the request here. Stock median was about -90 Nm, MAX bit off.
   GAS_OVERRIDE_TORQUE = -90.0
   # Sent with ACC_DECEL. The hard stop held about -75 to -88 Nm.
