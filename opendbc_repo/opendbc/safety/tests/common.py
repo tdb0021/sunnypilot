@@ -991,6 +991,20 @@ class SafetyTest(SafetyTestBase):
               continue
             if attr.startswith('TestChryslerRamHD') and current_test.startswith('TestChryslerRamHD'):
               continue
+            if attr.startswith('TestChryslerRamDT') and current_test.startswith('TestChryslerRamDT'):
+              continue
+            # Pacifica stock and longitudinal share the lateral TX addresses.
+            if attr.startswith(('TestChryslerSafety', 'TestChryslerLongitudinal')) and \
+               current_test.startswith(('TestChryslerSafety', 'TestChryslerLongitudinal')):
+              continue
+            # Pacifica and Ram HD longitudinal share DAS_3/4/5 addresses on bus 0.
+            chrysler_shared_long = {
+              'TestChryslerLongitudinalSafety',
+              'TestChryslerRamHDLongitudinalSafety',
+              'TestChryslerRamHDAltButtonLongitudinalSafety',
+            }
+            if attr in chrysler_shared_long and current_test in chrysler_shared_long:
+              continue
             if attr.startswith('TestHyundaiCanfd') and current_test.startswith('TestHyundaiCanfd'):
               continue
             if {attr, current_test}.issubset({'TestHyundaiLongitudinalSafety', 'TestHyundaiLongitudinalSafetyCameraSCC', 'TestHyundaiSafetyFCEVLong'}):

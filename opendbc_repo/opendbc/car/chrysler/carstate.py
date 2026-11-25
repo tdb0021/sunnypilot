@@ -114,6 +114,16 @@ class CarState(CarStateBase, MadsCarState, CarStateExt):
 
     return ret, ret_sp
 
+  def update_button_enable(self, buttonEvents: list[structs.CarState.ButtonEvent]):
+    # Stock ACC enables from accel/decel. Resume is the other engage button on these trucks,
+    # and safety enters controls_allowed on its falling edge too.
+    if self.CP.openpilotLongitudinalControl and not self.CP.pcmCruise:
+      for b in buttonEvents:
+        if b.type in (ButtonType.accelCruise, ButtonType.decelCruise, ButtonType.resumeCruise) and not b.pressed:
+          return True
+      return False
+    return super().update_button_enable(buttonEvents)
+
   def update_cusw(self, cp, cp_cam):
     ret = structs.CarState()
     ret_sp = structs.CarStateSP()

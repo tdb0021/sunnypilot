@@ -86,6 +86,21 @@ class CarInterface(CarInterfaceBase):
     if (0x62cc033 if candidate in CUSW_CARS else 0x2d0) in fingerprint[0]:
       ret.flags |= ChryslerFlags.HAS_BSM.value
 
+    # Ram 1500 and Ram HD only. Off unless the alpha-long toggle is on.
+    # Pacifica and Jeep are not included: their DASM sits on the bus we would
+    # have to share, and this port has not been checked there.
+    if candidate in RAM_CARS:
+      ret.alphaLongitudinalAvailable = True
+      if alpha_long:
+        ret.openpilotLongitudinalControl = True
+        ret.pcmCruise = False
+        ret.safetyConfigs[0].safetyParam |= ChryslerSafetyFlags.LONG.value
+        # 0.5 s is still a guess for Cummins turbo lag. The torque map is the blend of
+        # the two 2020 HD stock-ACC logs (208 Nm per m/s^2 + 133 Nm), clipped under
+        # the 500 Nm safety ceiling. ki stays 0. Below 1 m/s the controller drops ACC;
+        # stock never held a stop with ACC on.
+        ret.longitudinalActuatorDelay = 0.5
+
     return ret
 
   @staticmethod
@@ -114,6 +129,11 @@ class CarInterface(CarInterfaceBase):
     if 0x4FF in fingerprint[0]:
       ret.flags |= ChryslerFlagsSP.NO_MIN_STEERING_SPEED.value
       stock_cp.minSteerSpeed = 0.
+
+    if stock_cp.openpilotLongitudinalControl:
+      # The 1500's stock-ACC engage speed (14.5 m/s, or 0 on some EPS fw) does not apply
+      # when openpilot owns gas and brake. Lateral min-steer-speed is unchanged.
+      stock_cp.minEnableSpeed = -1.
 
     ret.intelligentCruiseButtonManagementAvailable = True
 

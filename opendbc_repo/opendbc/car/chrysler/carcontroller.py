@@ -1,14 +1,15 @@
 from opendbc.can import CANPacker
-from opendbc.car import Bus, DT_CTRL
-from opendbc.car.lateral import apply_meas_steer_torque_limits
+from opendbc.car import Bus, DT_CTRL, structs
 from opendbc.car.chrysler import chryslercan
-from opendbc.car.chrysler.values import CUSW_CARS, RAM_CARS, CarControllerParams, ChryslerFlags, RAM_DT
+from opendbc.car.chrysler.values import RAM_DT, RAM_CARS, CUSW_CARS, CarControllerParams, ChryslerFlags
 from opendbc.car.interfaces import CarControllerBase
-
+from opendbc.car.lateral import apply_meas_steer_torque_limits
 from opendbc.sunnypilot.car.chrysler.carcontroller_ext import CarControllerExt
 from opendbc.sunnypilot.car.chrysler.icbm import IntelligentCruiseButtonManagementInterface
 from opendbc.sunnypilot.car.chrysler.mads import MadsCarController
 from opendbc.sunnypilot.car.chrysler.values_ext import ChryslerFlagsSP
+
+LongCtrlState = structs.CarControl.Actuators.LongControlState
 
 
 class CarController(CarControllerBase, MadsCarController, CarControllerExt, IntelligentCruiseButtonManagementInterface):
@@ -26,6 +27,7 @@ class CarController(CarControllerBase, MadsCarController, CarControllerExt, Inte
 
     self.packer = CANPacker(dbc_names[Bus.pt])
     self.params = CarControllerParams(CP)
+    self.accel = 0.0
 
   def update(self, CC, CC_SP, CS, now_nanos):
     MadsCarController.update(self, CC, CC_SP, CS)
@@ -95,10 +97,78 @@ class CarController(CarControllerBase, MadsCarController, CarControllerExt, Inte
     # Intelligent Cruise Button Management
     can_sends.extend(IntelligentCruiseButtonManagementInterface.update(self, CS, CC_SP, self.packer, self.frame, self.last_button_frame))
 
+    if self.CP.openpilotLongitudinalControl:
+      can_sends.extend(self._long_control_messages(CC, CS))
+
     self.frame += 1
 
     new_actuators = CC.actuators.as_builder()
     new_actuators.torque = self.apply_torque_last / self.params.STEER_MAX
     new_actuators.torqueOutputCan = self.apply_torque_last
+    new_actuators.accel = self.accel
 
     return new_actuators, can_sends
+
+  def _long_control_messages(self, CC, CS):
+    p = CarControllerParams
+    gas_override = CS.out.gasPressed and CC.enabled and not CS.out.brakePressed
+    # No stock ACC stop was observed. Below ~3.6 kph, drop the command instead of
+    # creeping or holding with the untested standstill bits.
+    handback = CS.out.vEgo < p.LOW_SPEED_HANDBACK
+    if gas_override:
+      # ACC stays engaged. The request parks near -90 Nm and the max / fuel-shutoff
+      # bits drop, so the ECM follows the pedal instead of our torque number.
+      self.accel = 0.0
+      active = True
+      braking = False
+      torque = p.GAS_OVERRIDE_TORQUE
+      decel = p.INACTIVE_DECEL
+      torque_max = False
+      fuel_shutoff = False
+      gr_max = 0
+    elif (not CC.longActive) or CS.out.brakePressed or handback:
+      self.accel = 0.0
+      active = False
+      braking = False
+      torque = 0.0
+      decel = p.INACTIVE_DECEL
+      torque_max = False
+      fuel_shutoff = False
+      gr_max = 0
+    else:
+      accel = min(max(float(CC.actuators.accel), p.ACCEL_MIN), p.ACCEL_MAX)
+      if CC.actuators.longControlState == LongCtrlState.stopping:
+        accel = min(accel, p.BRAKE_ENTER_ACCEL)
+      braking = accel <= p.BRAKE_ENTER_ACCEL
+      self.accel = accel
+      active = True
+      torque_max = True
+      fuel_shutoff = True
+      if braking:
+        # Stock keeps about -80 Nm of engine request while ACC_DECEL is active.
+        torque = p.BRAKE_TORQUE
+        decel = self.accel
+        gr_max = 4 if self.accel <= p.HARD_BRAKE_DECEL else 0
+      else:
+        torque = p.TORQUE_FROM_ACCEL * accel + p.TORQUE_OFFSET
+        torque = min(max(torque, p.MIN_TORQUE_CMD), p.MAX_TORQUE_CMD)
+        decel = p.INACTIVE_DECEL
+        gr_max = 0
+
+    sends = []
+    # DAS_3 and DAS_5 are 50 Hz on this truck. DAS_3's counter is the real one.
+    if self.frame % 2 == 0:
+      sends.append(chryslercan.create_das_3(self.packer, active, torque, decel, braking,
+                                            torque_max, fuel_shutoff, gr_max))
+      sends.append(chryslercan.create_das_5(self.packer, CS.out.vEgo))
+    # DAS_4 was ~17 Hz in the log. 10 Hz is enough for the set-speed display.
+    if self.frame % 10 == 0:
+      # 2020 HD ACC_STATE: 0 off, 3 available, 4 engaged.
+      if active:
+        acc_state = 4
+      elif CC.enabled:
+        acc_state = 3
+      else:
+        acc_state = 0
+      sends.append(chryslercan.create_das_4(self.packer, acc_state, CC.hudControl.setSpeed))
+    return sends
